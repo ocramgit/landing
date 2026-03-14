@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Landing Competition</title>
+
+    <!-- Leaflet.js -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+    <!-- Google Font -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
+
+    <!-- Styles -->
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <!-- ═══════════════════════════════════════════════════ -->
+    <!-- PICKER VIEW — Map to select landing zone           -->
+    <!-- ═══════════════════════════════════════════════════ -->
+    <div id="picker-view" class="view hidden">
+        <div class="picker-header">
+            <div class="picker-title">
+                <span class="icon">✈️</span>
+                <h1>LANDING COMPETITION</h1>
+                <p>Clica no mapa para escolher o ponto de aterragem</p>
+            </div>
+            <button id="picker-close" class="btn-close" title="Cancelar">✕</button>
+        </div>
+        <div id="picker-map"></div>
+        <div id="picker-confirm-bar" class="hidden">
+            <div class="confirm-info">
+                <span class="pin-icon">📍</span>
+                <span id="confirm-coords">Coordenadas: ---</span>
+            </div>
+            <button id="btn-confirm" class="btn-confirm">
+                ✅ Confirmar Landing Zone
+            </button>
+        </div>
+    </div>
+
+    <!-- ═══════════════════════════════════════════════════ -->
+    <!-- HUD VIEW — Flight HUD + Countdown                 -->
+    <!-- ═══════════════════════════════════════════════════ -->
+    <div id="hud-view" class="view hidden">
+        <!-- Countdown overlay -->
+        <div id="countdown-overlay" class="hidden">
+            <div id="countdown-number"></div>
+        </div>
+
+        <!-- HUD panel (top right) -->
+        <div id="hud-panel">
+            <div class="hud-title">✈️ LANDING COMPETITION</div>
+            <div class="hud-row">
+                <span class="hud-label">Avião</span>
+                <span id="hud-plane" class="hud-value">---</span>
+            </div>
+            <div class="hud-row">
+                <span class="hud-label">Tempo</span>
+                <span id="hud-timer" class="hud-value">5:00</span>
+            </div>
+            <div class="hud-row">
+                <span class="hud-label">Jogadores</span>
+                <span id="hud-players" class="hud-value">0</span>
+            </div>
+        </div>
+
+        <!-- Landing feed (bottom right) -->
+        <div id="landing-feed"></div>
+    </div>
+
+    <!-- ═══════════════════════════════════════════════════ -->
+    <!-- RESULTS VIEW — GeoGuessr-style results             -->
+    <!-- ═══════════════════════════════════════════════════ -->
+    <div id="results-view" class="view hidden">
+        <div class="results-container">
+            <!-- Map side -->
+            <div id="results-map-container">
+                <div id="results-map"></div>
+            </div>
+
+            <!-- Sidebar -->
+            <div id="results-sidebar">
+                <div class="results-header">
+                    <h1>🏆 RESULTADOS</h1>
+                    <p class="results-subtitle">Competição de Aterragem</p>
+                </div>
+                <div id="results-list"></div>
+                <div class="results-footer">
+                    <div id="auto-close-bar">
+                        <div id="auto-close-progress"></div>
+                    </div>
+                    <p class="auto-close-text">Fecha automaticamente em <span id="auto-close-time">30</span>s</p>
+                    <button id="btn-close-results" class="btn-close-results">Fechar</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Scripts -->
+    <script src="js/app.js"></script>
+    <script src="js/picker.js"></script>
+    <script src="js/hud.js"></script>
+    <script src="js/results.js"></script>
+</body>
+</html>
