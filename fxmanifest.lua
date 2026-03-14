@@ -24,7 +24,6 @@ files {
     'html/index.html',
     'html/css/style.css',
     'html/js/app.js',
-    'html/js/picker.js',
     'html/js/hud.js',
     'html/js/results.js',
 }

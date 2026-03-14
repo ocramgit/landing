@@ -23,11 +23,6 @@ window.addEventListener('message', function(event) {
     if (!data || !data.action) return;
 
     switch (data.action) {
-        case 'showPicker':
-            showView('picker-view');
-            if (typeof initPicker === 'function') initPicker();
-            break;
-
         case 'showHUD':
             showView('hud-view');
             if (typeof initHUD === 'function') initHUD(data);
@@ -72,32 +67,27 @@ document.addEventListener('keydown', function(e) {
 });
 
 // ═══════════════════════════════════════════════════════════
-// DEV MODE — Simulate full game sequence in browser
+// DEV MODE — Simulate HUD + Results in browser
 // ═══════════════════════════════════════════════════════════
 if (isDevMode) {
     console.log('%c✈️ Landing Competition — DEV MODE', 'color: #00e5ff; font-size: 16px; font-weight: bold;');
-    console.log('Simulating game sequence...');
+    console.log('Simulating game sequence (HUD + Results only)...');
 
-    // Simulate picker
+    // Simulate HUD
     setTimeout(() => {
-        window.postMessage({ action: 'showPicker' }, '*');
-    }, 300);
-
-    // After "confirming", simulate HUD + countdown
-    setTimeout(() => {
-        hideAllViews();
         window.postMessage({
             action: 'showHUD',
-            zone: { worldX: 150.0, worldY: -1020.0 },
+            zone: { x: 150.0, y: -1020.0, z: 30.0 },
             planeName: 'Luxor Deluxe',
             flightTime: 300,
             totalPlayers: 4,
         }, '*');
-    }, 5000);
+    }, 500);
 
+    // Simulate countdown
     setTimeout(() => {
         window.postMessage({ action: 'countdown', seconds: 10 }, '*');
-    }, 5500);
+    }, 1000);
 
     // Simulate landing feed
     setTimeout(() => {
@@ -108,7 +98,7 @@ if (isDevMode) {
             score: 9577,
             exploded: false,
         }, '*');
-    }, 18000);
+    }, 14000);
 
     setTimeout(() => {
         window.postMessage({
@@ -118,7 +108,7 @@ if (isDevMode) {
             score: 8125,
             exploded: false,
         }, '*');
-    }, 20000);
+    }, 16000);
 
     setTimeout(() => {
         window.postMessage({
@@ -128,7 +118,7 @@ if (isDevMode) {
             score: 0,
             exploded: true,
         }, '*');
-    }, 22000);
+    }, 18000);
 
     // Simulate results
     setTimeout(() => {
@@ -140,7 +130,7 @@ if (isDevMode) {
                 { rank: 3, name: 'Ana Costa', distance: 1230.0, distanceFormatted: '1.23 km', score: 0, exploded: true, coords: { x: 900.0, y: -200.0, z: 30.0 } },
                 { rank: 4, name: 'Carlos Lima', distance: 560.0, distanceFormatted: '560.0 m', score: 4400, exploded: false, coords: { x: 600.0, y: -700.0, z: 30.0 } },
             ],
-            zone: { worldX: 150.0, worldY: -1020.0 },
+            zone: { x: 150.0, y: -1020.0, z: 30.0 },
         }, '*');
-    }, 25000);
+    }, 21000);
 }

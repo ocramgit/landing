@@ -7,13 +7,11 @@ local QBCore = exports['qb-core']:GetCoreObject()
 -- ── Game State ──────────────────────────────────────────────
 local GameState = {
     active = false,
-    zone = nil,             -- { worldX, worldY, worldZ }
-    plane = nil,            -- { model, label }
-    players = {},           -- { [source] = { spotIndex, landed, coords, exploded, name } }
+    zone = nil,             -- { x, y, z } — set via /setlanding
+    players = {},           -- { [source] = { spotIndex, plane, landed, coords, exploded, name } }
     results = {},           -- sorted results array
-    usedPlanes = {},        -- models used in previous rounds (avoid repeats)
+    usedPlanes = {},        -- models used in previous rounds (avoid repeats across rounds)
     initiator = nil,        -- source of who started the game
-    timerHandle = nil,      -- SetTimeout handle
 }
 
 -- ── Utility: Get all online players ─────────────────────────
@@ -35,31 +33,31 @@ local function GetPlayerDisplayName(source)
     return GetPlayerName(source) or ('Player ' .. source)
 end
 
--- ── Utility: Pick random plane (avoid repeats) ──────────────
-local function PickRandomPlane()
-    local available = {}
+-- ── Utility: Pick unique planes for all players ─────────────
+-- Each player gets a DIFFERENT airplane. If more players than
+-- planes, we shuffle and repeat but no two players in one round
+-- share the same model.
+local function AssignPlanesToPlayers(playerCount)
+    -- Build shuffled list of planes
+    local shuffled = {}
     for _, plane in ipairs(Config.Planes) do
-        local used = false
-        for _, usedModel in ipairs(GameState.usedPlanes) do
-            if usedModel == plane.model then
-                used = true
-                break
-            end
-        end
-        if not used then
-            available[#available + 1] = plane
-        end
+        shuffled[#shuffled + 1] = { model = plane.model, label = plane.label }
     end
 
-    -- Reset if all planes used
-    if #available == 0 then
-        GameState.usedPlanes = {}
-        available = Config.Planes
+    -- Fisher-Yates shuffle
+    for i = #shuffled, 2, -1 do
+        local j = math.random(i)
+        shuffled[i], shuffled[j] = shuffled[j], shuffled[i]
     end
 
-    local picked = available[math.random(#available)]
-    GameState.usedPlanes[#GameState.usedPlanes + 1] = picked.model
-    return picked
+    -- If we need more planes than available, duplicate the shuffled list
+    local assignments = {}
+    for i = 1, playerCount do
+        local idx = ((i - 1) % #shuffled) + 1
+        assignments[i] = shuffled[idx]
+    end
+
+    return assignments
 end
 
 -- ── Utility: Calculate 2D distance ──────────────────────────
@@ -98,20 +96,23 @@ local function BroadcastResults()
     -- Reset game after 35 seconds
     CreateThread(function()
         Wait(35000)
-        GameState.active = false
-        GameState.zone = nil
-        GameState.plane = nil
-        GameState.players = {}
-        GameState.results = {}
-        GameState.initiator = nil
-        GameState.timerHandle = nil
-        TriggerClientEvent('landing:gameReset', -1)
+        ResetGame()
     end)
+end
+
+-- ── Reset game state ────────────────────────────────────────
+local function ResetGame()
+    GameState.active = false
+    GameState.zone = nil
+    GameState.players = {}
+    GameState.results = {}
+    GameState.initiator = nil
+    TriggerClientEvent('landing:gameReset', -1)
 end
 
 -- ── Check if all players have landed ────────────────────────
 local function CheckAllLanded()
-    for source, data in pairs(GameState.players) do
+    for _, data in pairs(GameState.players) do
         if not data.landed then
             return false
         end
@@ -120,7 +121,41 @@ local function CheckAllLanded()
 end
 
 -- ═══════════════════════════════════════════════════════════
+-- COMMAND: /setlanding
+-- Admin goes to a location and runs this to mark the landing zone
+-- ═══════════════════════════════════════════════════════════
+RegisterCommand('setlanding', function(source, args, rawCommand)
+    if GameState.active then
+        TriggerClientEvent('QBCore:Notify', source, 'Não podes mudar o ponto durante uma competição!', 'error')
+        return
+    end
+
+    -- Ask client to send their current coords
+    TriggerClientEvent('landing:getMyCoords', source)
+end, false)
+
+-- Client sends back their position
+RegisterNetEvent('landing:sendMyCoords', function(coords)
+    local source = source
+
+    GameState.zone = {
+        x = coords.x,
+        y = coords.y,
+        z = coords.z,
+    }
+
+    -- Tell ALL clients to show the blip at this location
+    TriggerClientEvent('landing:setZoneBlip', -1, GameState.zone)
+
+    TriggerClientEvent('QBCore:Notify', source, '✅ Ponto de aterragem definido! Usa /comecarpiloto para iniciar.', 'success')
+
+    print('[Landing Competition] Landing zone set at: ' .. coords.x .. ', ' .. coords.y .. ', ' .. coords.z)
+end)
+
+-- ═══════════════════════════════════════════════════════════
 -- COMMAND: /comecarpiloto
+-- Starts the competition using the pre-set landing zone
+-- Each player gets a DIFFERENT airplane and a DIFFERENT spot
 -- ═══════════════════════════════════════════════════════════
 RegisterCommand('comecarpiloto', function(source, args, rawCommand)
     if GameState.active then
@@ -128,38 +163,33 @@ RegisterCommand('comecarpiloto', function(source, args, rawCommand)
         return
     end
 
-    GameState.initiator = source
-    TriggerClientEvent('landing:openPicker', source)
-end, false) -- false = all players can use it (change to true for admin only)
-
--- ═══════════════════════════════════════════════════════════
--- EVENT: Zone selected from picker
--- ═══════════════════════════════════════════════════════════
-RegisterNetEvent('landing:zoneSelected', function(data)
-    local source = source
-    if GameState.active then return end
-    if source ~= GameState.initiator then return end
+    if not GameState.zone then
+        TriggerClientEvent('QBCore:Notify', source, 'Define primeiro o ponto de aterragem com /setlanding!', 'error')
+        return
+    end
 
     -- Set game state
     GameState.active = true
-    GameState.zone = {
-        worldX = data.worldX,
-        worldY = data.worldY,
-        worldZ = data.worldZ or 0.0,
-    }
-    GameState.plane = PickRandomPlane()
+    GameState.initiator = source
     GameState.players = {}
     GameState.results = {}
 
-    -- Get all online players and assign spawn spots
+    -- Get all online players
     local onlinePlayers = GetOnlinePlayers()
-    local spawnAssignments = {}
     local totalSpots = #Config.SpawnSpots
 
+    -- Assign a DIFFERENT airplane to each player
+    local planeAssignments = AssignPlanesToPlayers(#onlinePlayers)
+
+    -- Assign spawn spots (unique per player)
+    local spawnAssignments = {}
     for i, playerId in ipairs(onlinePlayers) do
         local spotIndex = ((i - 1) % totalSpots) + 1
+        local plane = planeAssignments[i]
+
         GameState.players[playerId] = {
             spotIndex = spotIndex,
+            plane = plane,
             landed = false,
             coords = nil,
             exploded = false,
@@ -168,13 +198,13 @@ RegisterNetEvent('landing:zoneSelected', function(data)
         spawnAssignments[tostring(playerId)] = {
             spot = Config.SpawnSpots[spotIndex],
             spotIndex = spotIndex,
+            plane = plane, -- Each player gets their own plane
         }
     end
 
     -- Notify all players to start game
     TriggerClientEvent('landing:startGame', -1, {
         zone = GameState.zone,
-        plane = GameState.plane,
         spawnAssignments = spawnAssignments,
         countdown = Config.CountdownSeconds,
         flightTime = Config.FlightTime,
@@ -194,10 +224,61 @@ RegisterNetEvent('landing:zoneSelected', function(data)
         end
     end)
 
-    print('[Landing Competition] Game started! Plane: ' .. GameState.plane.label ..
-          ' | Zone: ' .. GameState.zone.worldX .. ', ' .. GameState.zone.worldY ..
-          ' | Players: ' .. #onlinePlayers)
-end)
+    -- Build plane list for log
+    local planeNames = {}
+    for i, p in ipairs(planeAssignments) do
+        planeNames[i] = p.label
+    end
+
+    print('[Landing Competition] Game started! ' ..
+          'Zone: ' .. GameState.zone.x .. ', ' .. GameState.zone.y ..
+          ' | Players: ' .. #onlinePlayers ..
+          ' | Planes: ' .. table.concat(planeNames, ', '))
+end, false)
+
+-- ═══════════════════════════════════════════════════════════
+-- COMMAND: /terminarpiloto — Force end the competition
+-- ═══════════════════════════════════════════════════════════
+RegisterCommand('terminarpiloto', function(source, args, rawCommand)
+    if not GameState.active then
+        TriggerClientEvent('QBCore:Notify', source, 'Não há nenhuma competição em andamento.', 'error')
+        return
+    end
+
+    -- Force-land anyone who hasn't landed yet
+    for playerId, data in pairs(GameState.players) do
+        if not data.landed then
+            data.landed = true
+            data.exploded = false
+            -- If we don't have coords for them, just skip them from results
+        end
+    end
+
+    -- Show results if there are any
+    if #GameState.results > 0 then
+        BroadcastResults()
+    else
+        -- No one landed, just reset
+        TriggerClientEvent('QBCore:Notify', -1, '⚠️ Competição terminada pelo admin.', 'primary')
+        ResetGame()
+    end
+
+    print('[Landing Competition] Game force-ended by player ' .. source)
+end, false)
+
+-- ═══════════════════════════════════════════════════════════
+-- COMMAND: /cancelarlanding — Cancel the set point
+-- ═══════════════════════════════════════════════════════════
+RegisterCommand('cancelarlanding', function(source, args, rawCommand)
+    if GameState.active then
+        TriggerClientEvent('QBCore:Notify', source, 'Não podes cancelar durante uma competição!', 'error')
+        return
+    end
+
+    GameState.zone = nil
+    TriggerClientEvent('landing:removeZoneBlip', -1)
+    TriggerClientEvent('QBCore:Notify', source, 'Ponto de aterragem removido.', 'primary')
+end, false)
 
 -- ═══════════════════════════════════════════════════════════
 -- EVENT: Player landed
@@ -216,7 +297,7 @@ RegisterNetEvent('landing:registerLanding', function(coords, exploded)
     -- Calculate distance and score
     local distance = CalcDistance2D(
         coords.x, coords.y,
-        GameState.zone.worldX, GameState.zone.worldY
+        GameState.zone.x, GameState.zone.y
     )
 
     local score = Config.Scoring.baseScore - (distance * Config.Scoring.penaltyPerMeter)
@@ -229,6 +310,7 @@ RegisterNetEvent('landing:registerLanding', function(coords, exploded)
     local result = {
         source = source,
         name = GameState.players[source].name,
+        plane = GameState.players[source].plane.label,
         coords = coords,
         distance = distance,
         exploded = exploded,
@@ -239,12 +321,13 @@ RegisterNetEvent('landing:registerLanding', function(coords, exploded)
     -- Notify all players about this landing
     TriggerClientEvent('landing:playerLanded', -1, {
         name = result.name,
+        plane = result.plane,
         distance = FormatDistance(distance),
         score = score,
         exploded = exploded,
     })
 
-    print('[Landing Competition] ' .. result.name .. ' landed at ' ..
+    print('[Landing Competition] ' .. result.name .. ' (' .. result.plane .. ') landed at ' ..
           FormatDistance(distance) .. ' | Score: ' .. score ..
           (exploded and ' (EXPLODED)' or ''))
 

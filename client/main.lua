@@ -14,9 +14,12 @@ local flightTimeLeft = 0
 local stableTimer = 0           -- frames at stable landing condition
 local STABLE_THRESHOLD = 4      -- 4 × 500ms = 2 seconds
 
+-- ── Blip/Marker ─────────────────────────────────────────────
+local zoneBlip = nil
+local zoneMarkerCoords = nil    -- {x, y, z} for drawing the ground marker
+
 -- ── Save/Restore original position ─────────────────────────
 local savedPos = nil
-local savedWeapons = nil
 
 local function SavePlayerState()
     local ped = PlayerPedId()
@@ -34,11 +37,89 @@ local function RestorePlayerState()
 end
 
 -- ═══════════════════════════════════════════════════════════
--- EVENT: Open picker (only for initiator)
+-- EVENT: Server asks for my coords (/setlanding)
 -- ═══════════════════════════════════════════════════════════
-RegisterNetEvent('landing:openPicker', function()
-    SetNuiFocus(true, true)
-    SendNUIMessage({ action = 'showPicker' })
+RegisterNetEvent('landing:getMyCoords', function()
+    local ped = PlayerPedId()
+    local coords = GetEntityCoords(ped)
+    TriggerServerEvent('landing:sendMyCoords', {
+        x = coords.x,
+        y = coords.y,
+        z = coords.z,
+    })
+end)
+
+-- ═══════════════════════════════════════════════════════════
+-- EVENT: Set the zone blip on the map (all players)
+-- ═══════════════════════════════════════════════════════════
+RegisterNetEvent('landing:setZoneBlip', function(zone)
+    -- Remove old blip if exists
+    if zoneBlip then
+        RemoveBlip(zoneBlip)
+        zoneBlip = nil
+    end
+
+    zoneMarkerCoords = zone
+
+    -- Create blip
+    zoneBlip = AddBlipForCoord(zone.x, zone.y, zone.z)
+    SetBlipSprite(zoneBlip, 358)            -- Parachute/target icon
+    SetBlipDisplay(zoneBlip, 4)
+    SetBlipScale(zoneBlip, 1.2)
+    SetBlipColour(zoneBlip, 1)              -- Red
+    SetBlipAsShortRange(zoneBlip, false)     -- Always visible
+    SetBlipFlashes(zoneBlip, true)
+    BeginTextCommandSetBlipName("STRING")
+    AddTextComponentString("🎯 Landing Zone")
+    EndTextCommandSetBlipName(zoneBlip)
+
+    -- Stop flashing after 10 seconds
+    CreateThread(function()
+        Wait(10000)
+        if zoneBlip and DoesBlipExist(zoneBlip) then
+            SetBlipFlashes(zoneBlip, false)
+        end
+    end)
+end)
+
+-- ═══════════════════════════════════════════════════════════
+-- EVENT: Remove zone blip (/cancelarlanding)
+-- ═══════════════════════════════════════════════════════════
+RegisterNetEvent('landing:removeZoneBlip', function()
+    if zoneBlip then
+        RemoveBlip(zoneBlip)
+        zoneBlip = nil
+    end
+    zoneMarkerCoords = nil
+end)
+
+-- ═══════════════════════════════════════════════════════════
+-- THREAD: Draw 3D marker at zone location (pulsing column)
+-- ═══════════════════════════════════════════════════════════
+CreateThread(function()
+    while true do
+        Wait(0)
+        if zoneMarkerCoords then
+            -- Draw pulsing cylinder marker at the landing zone
+            local z = zoneMarkerCoords.z - 1.0
+            DrawMarker(
+                1,                                      -- Type: cylinder
+                zoneMarkerCoords.x, zoneMarkerCoords.y, z,
+                0.0, 0.0, 0.0,                         -- Direction
+                0.0, 0.0, 0.0,                         -- Rotation
+                5.0, 5.0, 30.0,                        -- Scale (5m radius, 30m tall column)
+                255, 0, 0, 100,                        -- RGBA (Red, semi-transparent)
+                false,                                  -- Bob up and down
+                false,                                  -- Face camera
+                2,                                      -- P19
+                false,                                  -- Rotate
+                nil, nil,                               -- Texture dict/name
+                false                                   -- Draw on entities
+            )
+        else
+            Wait(500) -- Save CPU when no marker
+        end
+    end
 end)
 
 -- ═══════════════════════════════════════════════════════════
@@ -70,28 +151,28 @@ RegisterNetEvent('landing:startGame', function(data)
         -- Teleport to spawn spot
         SetEntityCoords(ped, mySpot.x, mySpot.y, mySpot.z, false, false, false, true)
         SetEntityHeading(ped, mySpot.h)
-        Wait(500)
+        Wait(1000)
 
-        -- Load vehicle model
-        local modelHash = GetHashKey(data.plane.model)
+        -- Load vehicle model (each player gets their own plane)
+        local myPlane = assignment.plane
+        local modelHash = GetHashKey(myPlane.model)
         RequestModel(modelHash)
         local timeout = 0
         while not HasModelLoaded(modelHash) do
             Wait(100)
             timeout = timeout + 100
             if timeout > 10000 then
-                print('[Landing] Failed to load model: ' .. data.plane.model)
+                print('[Landing] Failed to load model: ' .. myPlane.model)
                 return
             end
         end
 
-        -- Spawn vehicle
-        myVehicle = CreateVehicle(modelHash, mySpot.x, mySpot.y, mySpot.z + 1.0, mySpot.h, true, false)
+        -- Spawn vehicle at exact spot
+        myVehicle = CreateVehicle(modelHash, mySpot.x, mySpot.y, mySpot.z + 2.0, mySpot.h, true, false)
         SetModelAsNoLongerNeeded(modelHash)
 
         -- Configure vehicle
         SetVehicleEngineOn(myVehicle, true, true, false)
-        SetVehicleOnGroundProperly(myVehicle)
         SetEntityInvincible(myVehicle, true)
         FreezeEntityPosition(myVehicle, true)
 
@@ -104,15 +185,21 @@ RegisterNetEvent('landing:startGame', function(data)
         TriggerEvent('vehiclekeys:client:SetOwner', plate)
 
         -- Also try qb-vehiclekeys export method
-        local success, _ = pcall(function()
+        pcall(function()
             exports['qb-vehiclekeys']:SetVehicleOwner(plate)
         end)
+
+        -- Make sure the zone blip is visible and updated
+        if zoneBlip and DoesBlipExist(zoneBlip) then
+            SetBlipRoute(zoneBlip, true)    -- Show GPS route to landing zone
+            SetBlipRouteColour(zoneBlip, 1) -- Red route
+        end
 
         -- Send HUD info to NUI
         SendNUIMessage({
             action = 'showHUD',
             zone = zoneData,
-            planeName = data.plane.label,
+            planeName = myPlane.label,
             flightTime = data.flightTime,
             totalPlayers = data.totalPlayers,
         })
@@ -207,6 +294,11 @@ function RegisterMyLanding(exploded)
 
     TriggerServerEvent('landing:registerLanding', coords, exploded)
 
+    -- Remove GPS route
+    if zoneBlip and DoesBlipExist(zoneBlip) then
+        SetBlipRoute(zoneBlip, false)
+    end
+
     -- Notify NUI
     SendNUIMessage({
         action = 'landingRegistered',
@@ -275,6 +367,18 @@ RegisterNetEvent('landing:gameReset', function()
         hasLanded = false
         zoneData = nil
         stableTimer = 0
+
+        -- Remove GPS route
+        if zoneBlip and DoesBlipExist(zoneBlip) then
+            SetBlipRoute(zoneBlip, false)
+        end
+
+        -- Remove the zone blip entirely after game
+        if zoneBlip then
+            RemoveBlip(zoneBlip)
+            zoneBlip = nil
+        end
+        zoneMarkerCoords = nil
 
         -- Delete the spawned vehicle if it still exists
         if myVehicle and DoesEntityExist(myVehicle) then
