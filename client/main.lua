@@ -183,7 +183,15 @@ RegisterNetEvent('landing:startGame', function(data)
 
                 local veh = CreateVehicle(hash, spot.x, spot.y, spot.z + 2.0, spot.h, true, false)
                 if veh and veh ~= 0 and DoesEntityExist(veh) then
-                    print('[Landing] Vehicle spawned on attempt ' .. attempt)
+                    -- IMMEDIATELY protect from network cleanup
+                    SetEntityAsMissionEntity(veh, true, true)
+                    local netId = NetworkGetNetworkIdFromEntity(veh)
+                    if netId and netId ~= 0 then
+                        SetNetworkIdCanMigrate(netId, false)
+                        SetNetworkIdExistsOnAllMachines(netId, true)
+                    end
+                    SetVehicleHasBeenOwnedByPlayer(veh, true)
+                    print('[Landing] Vehicle spawned on attempt ' .. attempt .. ' (netId: ' .. tostring(netId) .. ')')
                     return veh
                 end
 
@@ -251,6 +259,14 @@ RegisterNetEvent('landing:startGame', function(data)
         print('[Landing] SUCCESS: Player got aircraft "' .. myPlane.model .. '"')
 
         -- ── Configure vehicle ─────────────────────────────────
+        -- Re-assert ownership protection (belt and suspenders)
+        SetEntityAsMissionEntity(myVehicle, true, true)
+        local netId = NetworkGetNetworkIdFromEntity(myVehicle)
+        if netId and netId ~= 0 then
+            SetNetworkIdCanMigrate(netId, false)
+            SetNetworkIdExistsOnAllMachines(netId, true)
+        end
+        SetVehicleHasBeenOwnedByPlayer(myVehicle, true)
         SetVehicleEngineOn(myVehicle, true, true, false)
         SetEntityInvincible(myVehicle, true)
         FreezeEntityPosition(myVehicle, true)
@@ -525,9 +541,15 @@ RegisterNetEvent('landing:gameReset', function()
 
         -- Delete the spawned vehicle if it still exists
         if myVehicle and DoesEntityExist(myVehicle) then
+            SetEntityAsMissionEntity(myVehicle, true, true)
             DeleteVehicle(myVehicle)
         end
         myVehicle = nil
+
+        -- Clean up ALL planes/vehicles around every spawn spot
+        for _, spot in ipairs(Config.SpawnSpots) do
+            ClearAreaOfVehicles(spot.x, spot.y, spot.z, 50.0, false, false, false, false, false)
+        end
 
         -- Restore original position
         RestorePlayerState()

@@ -240,30 +240,20 @@ end, false)
 -- COMMAND: /terminarpiloto — Force end the competition
 -- ═══════════════════════════════════════════════════════════
 RegisterCommand('terminarpiloto', function(source, args, rawCommand)
-    if not GameState.active then
-        TriggerClientEvent('QBCore:Notify', source, 'Não há nenhuma competição em andamento.', 'error')
-        return
-    end
+    -- Always force-reset everything, no matter the state
+    TriggerClientEvent('QBCore:Notify', -1, '⚠️ Competição terminada pelo admin.', 'primary')
 
-    -- Force-land anyone who hasn't landed yet
-    for playerId, data in pairs(GameState.players) do
-        if not data.landed then
-            data.landed = true
-            data.exploded = false
-            -- If we don't have coords for them, just skip them from results
-        end
-    end
+    -- Force immediate reset of ALL state
+    GameState.active = false
+    GameState.players = {}
+    GameState.results = {}
+    GameState.initiator = nil
+    -- NOTE: Keep GameState.zone so admin doesn't have to /setlanding again
 
-    -- Show results if there are any
-    if #GameState.results > 0 then
-        BroadcastResults()
-    else
-        -- No one landed, just reset
-        TriggerClientEvent('QBCore:Notify', -1, '⚠️ Competição terminada pelo admin.', 'primary')
-        ResetGame()
-    end
+    -- Tell all clients to clean up
+    TriggerClientEvent('landing:gameReset', -1)
 
-    print('[Landing Competition] Game force-ended by player ' .. source)
+    print('[Landing Competition] Game FORCE-ended by player ' .. source)
 end, false)
 
 -- ═══════════════════════════════════════════════════════════
