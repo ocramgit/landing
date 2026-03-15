@@ -148,54 +148,134 @@ RegisterNetEvent('landing:startGame', function(data)
 
         local ped = PlayerPedId()
 
-        -- Teleport to spawn spot
+        -- ── Teleport to spawn spot ──────────────────────────────
         SetEntityCoords(ped, mySpot.x, mySpot.y, mySpot.z, false, false, false, true)
         SetEntityHeading(ped, mySpot.h)
-        Wait(1000)
+        Wait(1500)
 
-        -- Load vehicle model (each player gets their own plane)
+        -- ── Load vehicle model with extended timeout ────────────
         local myPlane = assignment.plane
         local modelHash = GetHashKey(myPlane.model)
         RequestModel(modelHash)
         local timeout = 0
         while not HasModelLoaded(modelHash) do
-            Wait(100)
-            timeout = timeout + 100
-            if timeout > 10000 then
-                print('[Landing] Failed to load model: ' .. myPlane.model)
-                return
+            Wait(50)
+            timeout = timeout + 50
+            if timeout > 20000 then
+                -- Model failed to load — try a fallback model
+                print('[Landing] WARN: Failed to load model "' .. myPlane.model .. '", trying fallback "mammatus"')
+                modelHash = GetHashKey('mammatus')
+                RequestModel(modelHash)
+                local fallbackTimeout = 0
+                while not HasModelLoaded(modelHash) do
+                    Wait(50)
+                    fallbackTimeout = fallbackTimeout + 50
+                    if fallbackTimeout > 15000 then
+                        print('[Landing] CRITICAL: Could not load any aircraft model!')
+                        return
+                    end
+                end
+                myPlane = { model = 'mammatus', label = 'Mammatus (Fallback)' }
+                break
             end
         end
 
-        -- Spawn vehicle at exact spot
-        myVehicle = CreateVehicle(modelHash, mySpot.x, mySpot.y, mySpot.z + 2.0, mySpot.h, true, false)
+        -- ── Delete any existing vehicle from previous rounds ────
+        if myVehicle and DoesEntityExist(myVehicle) then
+            DeleteVehicle(myVehicle)
+            myVehicle = nil
+            Wait(300)
+        end
+
+        -- ── Spawn vehicle with retry logic ──────────────────────
+        local MAX_SPAWN_RETRIES = 5
+        myVehicle = nil
+        for attempt = 1, MAX_SPAWN_RETRIES do
+            -- Make sure ped is at the spawn spot
+            ped = PlayerPedId()
+            SetEntityCoords(ped, mySpot.x, mySpot.y, mySpot.z, false, false, false, true)
+            SetEntityHeading(ped, mySpot.h)
+            Wait(200)
+
+            -- Clear area before spawning
+            ClearAreaOfVehicles(mySpot.x, mySpot.y, mySpot.z, 15.0, false, false, false, false, false)
+            Wait(200)
+
+            myVehicle = CreateVehicle(modelHash, mySpot.x, mySpot.y, mySpot.z + 2.0, mySpot.h, true, false)
+            if myVehicle and myVehicle ~= 0 and DoesEntityExist(myVehicle) then
+                print('[Landing] Vehicle spawned successfully on attempt ' .. attempt .. ' (model: ' .. myPlane.model .. ')')
+                break
+            else
+                print('[Landing] Vehicle spawn attempt ' .. attempt .. ' failed, retrying...')
+                myVehicle = nil
+                Wait(1000)
+                -- Re-request model just in case
+                if not HasModelLoaded(modelHash) then
+                    RequestModel(modelHash)
+                    Wait(2000)
+                end
+            end
+        end
+
         SetModelAsNoLongerNeeded(modelHash)
 
-        -- Configure vehicle
+        -- Final validation — if vehicle still doesn't exist, abort
+        if not myVehicle or not DoesEntityExist(myVehicle) then
+            print('[Landing] CRITICAL: Could not create vehicle after ' .. MAX_SPAWN_RETRIES .. ' attempts!')
+            return
+        end
+
+        -- ── Configure vehicle ─────────────────────────────────
         SetVehicleEngineOn(myVehicle, true, true, false)
         SetEntityInvincible(myVehicle, true)
         FreezeEntityPosition(myVehicle, true)
+        SetVehicleOnGroundProperly(myVehicle)
 
-        -- Put player inside
-        TaskWarpPedIntoVehicle(ped, myVehicle, -1)
-        Wait(500)
+        -- ── Warp player into vehicle with retry ─────────────────
+        ped = PlayerPedId()
+        local warpAttempts = 0
+        local MAX_WARP_RETRIES = 10
+        repeat
+            TaskWarpPedIntoVehicle(ped, myVehicle, -1)
+            Wait(500)
+            ped = PlayerPedId()
+            warpAttempts = warpAttempts + 1
+        until IsPedInVehicle(ped, myVehicle, false) or warpAttempts >= MAX_WARP_RETRIES
 
-        -- Give vehicle keys (QB-Core vehiclekeys)
-        local plate = GetVehicleNumberPlateText(myVehicle)
-        TriggerEvent('vehiclekeys:client:SetOwner', plate)
-
-        -- Also try qb-vehiclekeys export method
-        pcall(function()
-            exports['qb-vehiclekeys']:SetVehicleOwner(plate)
-        end)
-
-        -- Make sure the zone blip is visible and updated
-        if zoneBlip and DoesBlipExist(zoneBlip) then
-            SetBlipRoute(zoneBlip, true)    -- Show GPS route to landing zone
-            SetBlipRouteColour(zoneBlip, 1) -- Red route
+        if not IsPedInVehicle(ped, myVehicle, false) then
+            print('[Landing] WARN: Could not warp player into vehicle after ' .. MAX_WARP_RETRIES .. ' attempts, forcing...')
+            SetPedIntoVehicle(ped, myVehicle, -1)
+            Wait(300)
         end
 
-        -- Send HUD info to NUI
+        -- ── Give vehicle keys (multiple methods) ────────────────
+        local plate = GetVehicleNumberPlateText(myVehicle)
+        if plate and plate ~= '' then
+            -- Method 1: QB vehiclekeys event
+            pcall(function()
+                TriggerEvent('vehiclekeys:client:SetOwner', plate)
+            end)
+            -- Method 2: qb-vehiclekeys export
+            pcall(function()
+                exports['qb-vehiclekeys']:SetVehicleOwner(plate)
+            end)
+            -- Method 3: Direct server-side key assignment
+            pcall(function()
+                TriggerServerEvent('qb-vehiclekeys:server:AcquireVehicleKeys', plate)
+            end)
+        end
+
+        -- ── Disable vehicle auto-lock ───────────────────────────
+        SetVehicleDoorsLocked(myVehicle, 1) -- 1 = unlocked
+        SetVehicleDoorsLockedForAllPlayers(myVehicle, false)
+
+        -- ── Make sure the zone blip is visible ──────────────────
+        if zoneBlip and DoesBlipExist(zoneBlip) then
+            SetBlipRoute(zoneBlip, true)
+            SetBlipRouteColour(zoneBlip, 1)
+        end
+
+        -- ── Send HUD info to NUI ────────────────────────────────
         SendNUIMessage({
             action = 'showHUD',
             zone = zoneData,
@@ -204,24 +284,50 @@ RegisterNetEvent('landing:startGame', function(data)
             totalPlayers = data.totalPlayers,
         })
 
-        -- Countdown
+        -- ── Countdown ───────────────────────────────────────────
         SendNUIMessage({ action = 'countdown', seconds = data.countdown })
+
+        -- Safety thread: keep player in vehicle during countdown
+        local countdownActive = true
+        CreateThread(function()
+            while countdownActive and gameActive do
+                Wait(300)
+                local p = PlayerPedId()
+                if myVehicle and DoesEntityExist(myVehicle) and not IsPedInVehicle(p, myVehicle, false) then
+                    SetPedIntoVehicle(p, myVehicle, -1)
+                    print('[Landing] Re-warped player into vehicle during countdown')
+                end
+            end
+        end)
 
         -- Wait for countdown to finish
         for i = data.countdown, 1, -1 do
             Wait(1000)
         end
         Wait(500)
+        countdownActive = false
 
-        -- UNFREEZE — GO!
-        FreezeEntityPosition(myVehicle, false)
-        SetEntityInvincible(myVehicle, false)
+        -- ── Final check before unfreeze ─────────────────────────
+        ped = PlayerPedId()
+        if myVehicle and DoesEntityExist(myVehicle) then
+            if not IsPedInVehicle(ped, myVehicle, false) then
+                SetPedIntoVehicle(ped, myVehicle, -1)
+                Wait(300)
+            end
+
+            -- UNFREEZE — GO!
+            FreezeEntityPosition(myVehicle, false)
+            SetEntityInvincible(myVehicle, false)
+            SetVehicleEngineOn(myVehicle, true, true, false)
+        else
+            print('[Landing] CRITICAL: Vehicle disappeared before unfreeze!')
+            return
+        end
 
         -- Start flight timer thread
         StartFlightTimer()
 
         -- Grace period: wait 5 seconds before landing detection
-        -- (vehicle is still on the runway after unfreeze)
         Wait(5000)
 
         -- Start landing detection thread (only if still in game)
