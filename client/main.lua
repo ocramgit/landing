@@ -13,6 +13,8 @@ local zoneData = nil
 local flightTimeLeft = 0
 local stableTimer = 0           -- frames at stable landing condition
 local STABLE_THRESHOLD = 4      -- 4 × 500ms = 2 seconds
+local stationaryTimer = 0       -- frames where vehicle is barely moving
+local STATIONARY_THRESHOLD = 40 -- 40 × 500ms = 20 seconds
 
 -- ── Blip/Marker ─────────────────────────────────────────────
 local zoneBlip = nil
@@ -144,6 +146,7 @@ RegisterNetEvent('landing:startGame', function(data)
         zoneData = data.zone
         flightTimeLeft = data.flightTime
         stableTimer = 0
+        stationaryTimer = 0
         mySpot = assignment.spot
 
         local ped = PlayerPedId()
@@ -153,31 +156,64 @@ RegisterNetEvent('landing:startGame', function(data)
         SetEntityHeading(ped, mySpot.h)
         Wait(1500)
 
-        -- ── Load vehicle model with extended timeout ────────────
+        -- ── Helper: load a model with timeout ──────────────────
+        local function LoadModel(hash, maxMs)
+            RequestModel(hash)
+            local waited = 0
+            while not HasModelLoaded(hash) do
+                Wait(50)
+                waited = waited + 50
+                if waited > maxMs then return false end
+            end
+            return true
+        end
+
+        -- ── Helper: try to spawn vehicle ────────────────────────
+        local function TrySpawnVehicle(hash, spot, maxRetries)
+            for attempt = 1, maxRetries do
+                -- Make sure ped is at the spawn spot
+                ped = PlayerPedId()
+                SetEntityCoords(ped, spot.x, spot.y, spot.z, false, false, false, true)
+                SetEntityHeading(ped, spot.h)
+                Wait(200)
+
+                -- Clear area before spawning
+                ClearAreaOfVehicles(spot.x, spot.y, spot.z, 15.0, false, false, false, false, false)
+                Wait(200)
+
+                local veh = CreateVehicle(hash, spot.x, spot.y, spot.z + 2.0, spot.h, true, false)
+                if veh and veh ~= 0 and DoesEntityExist(veh) then
+                    print('[Landing] Vehicle spawned on attempt ' .. attempt)
+                    return veh
+                end
+
+                print('[Landing] Spawn attempt ' .. attempt .. ' failed, retrying...')
+                if veh and veh ~= 0 then DeleteVehicle(veh) end
+                Wait(1000)
+
+                -- Re-request model just in case it got unloaded
+                if not HasModelLoaded(hash) then
+                    RequestModel(hash)
+                    Wait(2000)
+                end
+            end
+            return nil
+        end
+
+        -- ── Load vehicle model ──────────────────────────────────
         local myPlane = assignment.plane
         local modelHash = GetHashKey(myPlane.model)
-        RequestModel(modelHash)
-        local timeout = 0
-        while not HasModelLoaded(modelHash) do
-            Wait(50)
-            timeout = timeout + 50
-            if timeout > 20000 then
-                -- Model failed to load — try a fallback model
-                print('[Landing] WARN: Failed to load model "' .. myPlane.model .. '", trying fallback "mammatus"')
-                modelHash = GetHashKey('mammatus')
-                RequestModel(modelHash)
-                local fallbackTimeout = 0
-                while not HasModelLoaded(modelHash) do
-                    Wait(50)
-                    fallbackTimeout = fallbackTimeout + 50
-                    if fallbackTimeout > 15000 then
-                        print('[Landing] CRITICAL: Could not load any aircraft model!')
-                        return
-                    end
-                end
-                myPlane = { model = 'mammatus', label = 'Mammatus (Fallback)' }
-                break
+        local FALLBACK_MODEL = 'mallard'
+        local FALLBACK_LABEL = 'Mallard (Fallback)'
+
+        if not LoadModel(modelHash, 20000) then
+            print('[Landing] WARN: Failed to load "' .. myPlane.model .. '", switching to fallback "' .. FALLBACK_MODEL .. '"')
+            modelHash = GetHashKey(FALLBACK_MODEL)
+            if not LoadModel(modelHash, 15000) then
+                print('[Landing] CRITICAL: Could not load any aircraft model!')
+                return
             end
+            myPlane = { model = FALLBACK_MODEL, label = FALLBACK_LABEL }
         end
 
         -- ── Delete any existing vehicle from previous rounds ────
@@ -187,43 +223,32 @@ RegisterNetEvent('landing:startGame', function(data)
             Wait(300)
         end
 
-        -- ── Spawn vehicle with retry logic ──────────────────────
-        local MAX_SPAWN_RETRIES = 5
-        myVehicle = nil
-        for attempt = 1, MAX_SPAWN_RETRIES do
-            -- Make sure ped is at the spawn spot
-            ped = PlayerPedId()
-            SetEntityCoords(ped, mySpot.x, mySpot.y, mySpot.z, false, false, false, true)
-            SetEntityHeading(ped, mySpot.h)
-            Wait(200)
+        -- ── Spawn vehicle (try original, then fallback) ─────────
+        local MAX_RETRIES = 5
+        myVehicle = TrySpawnVehicle(modelHash, mySpot, MAX_RETRIES)
 
-            -- Clear area before spawning
-            ClearAreaOfVehicles(mySpot.x, mySpot.y, mySpot.z, 15.0, false, false, false, false, false)
-            Wait(200)
-
-            myVehicle = CreateVehicle(modelHash, mySpot.x, mySpot.y, mySpot.z + 2.0, mySpot.h, true, false)
-            if myVehicle and myVehicle ~= 0 and DoesEntityExist(myVehicle) then
-                print('[Landing] Vehicle spawned successfully on attempt ' .. attempt .. ' (model: ' .. myPlane.model .. ')')
-                break
-            else
-                print('[Landing] Vehicle spawn attempt ' .. attempt .. ' failed, retrying...')
-                myVehicle = nil
-                Wait(1000)
-                -- Re-request model just in case
-                if not HasModelLoaded(modelHash) then
-                    RequestModel(modelHash)
-                    Wait(2000)
+        -- If original model failed to spawn, try fallback mallard
+        if not myVehicle or not DoesEntityExist(myVehicle) then
+            print('[Landing] Original model "' .. myPlane.model .. '" failed all spawns. Trying fallback "' .. FALLBACK_MODEL .. '"...')
+            local fallbackHash = GetHashKey(FALLBACK_MODEL)
+            if LoadModel(fallbackHash, 15000) then
+                myVehicle = TrySpawnVehicle(fallbackHash, mySpot, MAX_RETRIES)
+                if myVehicle and DoesEntityExist(myVehicle) then
+                    myPlane = { model = FALLBACK_MODEL, label = FALLBACK_LABEL }
+                    SetModelAsNoLongerNeeded(fallbackHash)
                 end
             end
         end
 
         SetModelAsNoLongerNeeded(modelHash)
 
-        -- Final validation — if vehicle still doesn't exist, abort
+        -- Final validation
         if not myVehicle or not DoesEntityExist(myVehicle) then
-            print('[Landing] CRITICAL: Could not create vehicle after ' .. MAX_SPAWN_RETRIES .. ' attempts!')
+            print('[Landing] CRITICAL: Could not create ANY vehicle after all attempts!')
             return
         end
+
+        print('[Landing] SUCCESS: Player got aircraft "' .. myPlane.model .. '"')
 
         -- ── Configure vehicle ─────────────────────────────────
         SetVehicleEngineOn(myVehicle, true, true, false)
@@ -378,6 +403,18 @@ function StartLandingDetection()
                 end
             else
                 stableTimer = 0
+            end
+
+            -- Stationary detection: if barely moving for 20s, consider landed/stuck
+            if speed < 2.0 then
+                stationaryTimer = stationaryTimer + 1
+                if stationaryTimer >= STATIONARY_THRESHOLD then
+                    print('[Landing] Vehicle stationary for 20s — registering as landed')
+                    RegisterMyLanding(false)
+                    break
+                end
+            else
+                stationaryTimer = 0
             end
         end
     end)
